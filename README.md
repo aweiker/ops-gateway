@@ -2,6 +2,13 @@
 
 A tiny, single-binary HTTP service for out-of-band management of an [OpenClaw](https://github.com/openclaw/openclaw) gateway. Designed to run alongside the gateway as a systemd service behind a Cloudflare Tunnel with Zero Trust access.
 
+## Screenshots
+
+<p align="center">
+  <img src="screenshots/healthy.png" width="360" alt="Gateway healthy">
+  <img src="screenshots/down.png" width="360" alt="Gateway down">
+</p>
+
 ## What it does
 
 - **`GET /`** — Web UI with live gateway status, health history bar, and a restart button
