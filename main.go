@@ -1,5 +1,5 @@
 // ops-gateway is a tiny authenticated HTTP service for out-of-band
-// management of the OpenClaw gateway. It exposes status/restart endpoints
+// management of the OpenClaw gateway. It exposes status/restart/doctor endpoints
 // protected by either a bearer token or Cloudflare Access (Zero Trust).
 //
 // Background health checker runs every 30s and caches results for the UI.
@@ -34,6 +34,12 @@ type statusResponse struct {
 	Current healthCheck   `json:"current"`
 	History []healthCheck `json:"history"`
 	Uptime  string        `json:"uptime"`
+}
+
+type doctorResponse struct {
+	OK     bool   `json:"ok"`
+	Output string `json:"output"`
+	Time   string `json:"time"`
 }
 
 // healthCache stores the last N health check results.
@@ -118,7 +124,7 @@ const uiHTML = `<!DOCTYPE html>
   .status-value { color: #94a3b8; font-size: 0.9rem; }
   .btn {
     display: block; width: 100%; padding: 0.85rem;
-    margin-top: 1.5rem; border: none; border-radius: 8px;
+    margin-top: 0.75rem; border: none; border-radius: 8px;
     font-size: 1rem; font-weight: 600; cursor: pointer;
     transition: all 0.2s;
   }
@@ -126,6 +132,17 @@ const uiHTML = `<!DOCTYPE html>
   .btn-restart:hover { background: #2563eb; }
   .btn-restart:active { transform: scale(0.98); }
   .btn-restart:disabled { background: #475569; cursor: not-allowed; }
+  .btn-row { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+  .btn-sm {
+    flex: 1; padding: 0.6rem; border: none; border-radius: 8px;
+    font-size: 0.85rem; font-weight: 600; cursor: pointer;
+    transition: all 0.2s;
+  }
+  .btn-doctor { background: #6366f1; color: white; }
+  .btn-doctor:hover { background: #4f46e5; }
+  .btn-fix { background: #f59e0b; color: #1a1f2e; }
+  .btn-fix:hover { background: #d97706; }
+  .btn-sm:disabled { background: #475569; color: #94a3b8; cursor: not-allowed; }
   .msg {
     text-align: center; margin-top: 1rem; font-size: 0.9rem;
     min-height: 1.2rem; color: #94a3b8;
@@ -134,21 +151,19 @@ const uiHTML = `<!DOCTYPE html>
   .msg-err { color: #ef4444; }
   .history { margin-top: 1.5rem; }
   .history h2 { font-size: 0.85rem; color: #64748b; margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; }
-  .history-bar {
-    display: flex; gap: 2px; height: 24px; align-items: flex-end;
-  }
-  .history-pip {
-    flex: 1; border-radius: 2px; min-width: 4px;
-    height: 100%; transition: background 0.3s;
-  }
+  .history-bar { display: flex; gap: 2px; height: 24px; align-items: flex-end; }
+  .history-pip { flex: 1; border-radius: 2px; min-width: 4px; height: 100%; transition: background 0.3s; }
   .pip-green { background: #22c55e; }
   .pip-red { background: #ef4444; }
   .pip-gray { background: #2d3548; }
-  .history-meta {
-    display: flex; justify-content: space-between;
-    font-size: 0.7rem; color: #475569; margin-top: 0.25rem;
-  }
+  .history-meta { display: flex; justify-content: space-between; font-size: 0.7rem; color: #475569; margin-top: 0.25rem; }
   .uptime-text { text-align: center; color: #64748b; font-size: 0.8rem; margin-top: 0.5rem; }
+  .output-box {
+    margin-top: 1rem; background: #0f1219; border-radius: 8px;
+    padding: 0.75rem; font-family: monospace; font-size: 0.75rem;
+    color: #94a3b8; max-height: 200px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-word; display: none;
+  }
 </style>
 </head>
 <body>
@@ -172,15 +187,17 @@ const uiHTML = `<!DOCTYPE html>
   <div class="history">
     <h2>Last 30 minutes</h2>
     <div id="history-bar" class="history-bar"></div>
-    <div class="history-meta">
-      <span>30m ago</span>
-      <span>now</span>
-    </div>
+    <div class="history-meta"><span>30m ago</span><span>now</span></div>
     <div id="uptime-text" class="uptime-text"></div>
   </div>
 
   <button id="restart-btn" class="btn btn-restart" onclick="doRestart()">Restart Gateway</button>
+  <div class="btn-row">
+    <button id="doctor-btn" class="btn-sm btn-doctor" onclick="doDoctor(false)">Doctor</button>
+    <button id="fix-btn" class="btn-sm btn-fix" onclick="doDoctor(true)">Doctor --fix</button>
+  </div>
   <div id="msg" class="msg"></div>
+  <pre id="output" class="output-box"></pre>
 </div>
 <script>
 async function checkStatus() {
@@ -208,12 +225,10 @@ async function checkStatus() {
 
 function renderHistory(checks) {
   const bar = document.getElementById('history-bar');
-  // Show last 60 slots (30 min at 30s intervals)
   const slots = 60;
   let html = '';
   const start = Math.max(0, checks.length - slots);
   const visible = checks.slice(start);
-  // Pad front with gray
   for (let i = 0; i < slots - visible.length; i++) {
     html += '<div class="history-pip pip-gray"></div>';
   }
@@ -226,10 +241,12 @@ function renderHistory(checks) {
 async function doRestart() {
   const btn = document.getElementById('restart-btn');
   const msg = document.getElementById('msg');
+  const out = document.getElementById('output');
   btn.disabled = true;
   btn.textContent = 'Restarting...';
   msg.textContent = '';
   msg.className = 'msg';
+  out.style.display = 'none';
   try {
     const r = await fetch('/restart', {method:'POST'});
     const d = await r.json();
@@ -249,6 +266,39 @@ async function doRestart() {
   btn.textContent = 'Restart Gateway';
 }
 
+async function doDoctor(fix) {
+  const btn = fix ? document.getElementById('fix-btn') : document.getElementById('doctor-btn');
+  const msg = document.getElementById('msg');
+  const out = document.getElementById('output');
+  btn.disabled = true;
+  btn.textContent = fix ? 'Fixing...' : 'Running...';
+  msg.textContent = '';
+  msg.className = 'msg';
+  out.style.display = 'none';
+  try {
+    const url = fix ? '/doctor?fix=true' : '/doctor';
+    const r = await fetch(url, {method:'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      msg.textContent = '\u2705 ' + (fix ? 'Doctor --fix complete' : 'Doctor complete');
+      msg.className = 'msg msg-ok';
+    } else {
+      msg.textContent = '\u26a0\ufe0f Issues found';
+      msg.className = 'msg msg-err';
+    }
+    if (d.output) {
+      out.textContent = d.output;
+      out.style.display = 'block';
+    }
+    if (fix) setTimeout(checkStatus, 3000);
+  } catch(e) {
+    msg.textContent = '\u274c Request failed';
+    msg.className = 'msg msg-err';
+  }
+  btn.disabled = false;
+  btn.textContent = fix ? 'Doctor --fix' : 'Doctor';
+}
+
 checkStatus();
 setInterval(checkStatus, 10000);
 </script>
@@ -264,6 +314,11 @@ func main() {
 	port := os.Getenv("OPS_PORT")
 	if port == "" {
 		port = "18790"
+	}
+
+	openclawBin := os.Getenv("OPENCLAW_BIN")
+	if openclawBin == "" {
+		openclawBin = "openclaw"
 	}
 
 	// Background health checker — every 30s, cache last 120 checks (1 hour)
@@ -353,6 +408,37 @@ func main() {
 			OK:      true,
 			Message: "openclaw-gateway restarted",
 			Time:    time.Now().UTC().Format(time.RFC3339),
+		})
+	})
+
+	// Doctor — Cloudflare Access OR bearer token
+	mux.HandleFunc("POST /doctor", func(w http.ResponseWriter, r *http.Request) {
+		if !hasCloudflareAccess(r) && !checkBearerToken(r, token) {
+			writeJSON(w, http.StatusUnauthorized, response{
+				OK: false, Message: "unauthorized",
+				Time: time.Now().UTC().Format(time.RFC3339),
+			})
+			return
+		}
+
+		fix := r.URL.Query().Get("fix") == "true"
+		args := []string{"doctor"}
+		if fix {
+			args = append(args, "--fix")
+		}
+
+		log.Printf("doctor requested (fix=%v)", fix)
+		cmd := exec.Command(openclawBin, args...)
+		output, err := cmd.CombinedOutput()
+		ok := err == nil
+
+		log.Printf("doctor complete (ok=%v, output=%d bytes)", ok, len(output))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(doctorResponse{
+			OK:     ok,
+			Output: string(output),
+			Time:   time.Now().UTC().Format(time.RFC3339),
 		})
 	})
 
