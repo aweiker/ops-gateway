@@ -5,9 +5,7 @@ A tiny, single-binary HTTP service for out-of-band management of an [OpenClaw](h
 ## Screenshots
 
 <p align="center">
-  <img src="screenshots/mobile.png" width="280" alt="Mobile UI">
-  <img src="screenshots/healthy.png" width="360" alt="Gateway healthy">
-  <img src="screenshots/down.png" width="360" alt="Gateway down">
+  <img src="screenshots/mobile.png" width="320" alt="Mobile UI">
 </p>
 
 ## What it does
